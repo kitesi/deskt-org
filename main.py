@@ -4,10 +4,38 @@ import os
 import re
 from collections import defaultdict
 
-import numpy as np
 import PyPDF2
 from sklearn.cluster import KMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
+from transformers import pipeline
+
+# Initialize a text summarization model
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+
+def summarize_cluster_content(file_texts):
+    """Summarize the content of a cluster to generate a descriptive name."""
+    combined_text = " ".join(file_texts)
+    if len(combined_text) > 1024:  # Summarization limit for some models
+        combined_text = combined_text[:1024]
+    summary = summarizer(combined_text, max_length=10, min_length=5, do_sample=False)[0]['summary_text']
+    return summary
+
+def cluster_files(file_paths, n_clusters):
+    features, vectorizer = extract_text_features(file_paths)
+    model = KMeans(n_clusters=n_clusters, random_state=42)
+    labels = model.fit_predict(features)
+
+    cluster_files_map = defaultdict(list)
+    for file, label in zip(file_paths, labels):
+        cluster_files_map[label].append(file)
+
+    cluster_names = {}
+    for label, files in cluster_files_map.items():
+        file_texts = [extract_text_from_pdf(file) if file.endswith('.pdf') else open(file).read() for file in files]
+        cluster_name = summarize_cluster_content(file_texts)
+        cluster_names[label] = re.sub(r"[^\w\s-]", "", cluster_name) or f"Cluster_{label}"
+
+    return labels, cluster_names
 
 
 def extract_text_from_pdf(pdf_path: str):
@@ -31,30 +59,6 @@ def extract_text_features(file_paths):
 
     vectorizer = TfidfVectorizer(stop_words='english')
     return vectorizer.fit_transform(texts).toarray(), vectorizer
-
-def cluster_files(file_paths, n_clusters):
-    features, vectorizer = extract_text_features(file_paths)
-    model = KMeans(n_clusters=n_clusters, random_state=42)
-    labels = model.fit_predict(features)
-
-    terms = np.array(vectorizer.get_feature_names_out())
-    cluster_keywords = defaultdict(list)
-
-    for label in range(n_clusters):
-        cluster_indices = np.where(labels == label)[0]
-        cluster_features = features[cluster_indices].mean(axis=0)
-        top_indices = np.argsort(cluster_features)[-5:][::-1]
-
-        filtered_terms = [terms[i] for i in top_indices if not terms[i].isnumeric()]
-        cluster_keywords[label].extend(filtered_terms)
-
-    cluster_names = {}
-    for label, keywords in cluster_keywords.items():
-        name = "_".join(sorted(set(keywords)))[:50]  # Combine keywords, limit name length
-        name = re.sub(r"[^\w\s-]", "", name)  # Make filesystem-safe
-        cluster_names[label] = name or f"Cluster_{label}"
-
-    return labels, cluster_names
 
 def pre_process_file(files: list[str], directory: str):
     large_files = []
